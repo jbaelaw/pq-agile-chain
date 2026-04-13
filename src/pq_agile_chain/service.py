@@ -84,8 +84,12 @@ class ChainWorkspace:
 
     def reset_demo(self, *, difficulty: int = 2) -> dict[str, Any]:
         with self._lock:
-            if self.root_dir.exists():
-                shutil.rmtree(self.root_dir)
+            self.root_dir.mkdir(parents=True, exist_ok=True)
+            for path in self.root_dir.iterdir():
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
             self.wallets_dir.mkdir(parents=True, exist_ok=True)
 
             alice = create_wallet(

@@ -18,6 +18,9 @@ def test_web_demo_flow(tmp_path):
     assert snapshot["workspace"]["has_chain"] is True
     assert {wallet["wallet_id"] for wallet in snapshot["wallets"]} == {"alice", "bob"}
 
+    bootstrap_again = client.post("/api/demo/bootstrap", json={"difficulty": 1})
+    assert bootstrap_again.status_code == 200
+
     transfer = client.post(
         "/api/transfer",
         json={
