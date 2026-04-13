@@ -1,0 +1,2 @@
+[console_scripts]
+pq-agile-chain = pq_agile_chain.cli:main
