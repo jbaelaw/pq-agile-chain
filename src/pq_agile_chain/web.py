@@ -15,7 +15,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>qc.jrti.org | PQ-Agile Chain</title>
+  <title>jrti.org/qc | PQ-Agile Chain</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -153,7 +153,7 @@ INDEX_HTML = """<!doctype html>
   <main>
     <header>
       <p class="muted">JRTI · 법률·언어·인공지능 통섭연구소</p>
-      <h1>qc.jrti.org</h1>
+      <h1>jrti.org/qc</h1>
       <p>PQ-Agile Chain demonstrator. Post-quantum signatures are provided by <code>pqcrypto</code>; the chain logic focuses on account-level key rotation and security floors.</p>
       <div class="toolbar">
         <button id="reset-demo">데모 초기화</button>
@@ -229,6 +229,7 @@ INDEX_HTML = """<!doctype html>
   <script>
     const state = { snapshot: null };
     const statusEl = document.getElementById("status");
+    const basePath = window.location.pathname.startsWith("/qc") ? "/qc" : "";
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -356,8 +357,12 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function apiUrl(path) {
+      return `${basePath}${path}`;
+    }
+
     async function callApi(path, payload) {
-      const response = await fetch(path, {
+      const response = await fetch(apiUrl(path), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload || {})
@@ -370,7 +375,7 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function refreshState() {
-      const response = await fetch("/api/state");
+      const response = await fetch(apiUrl("/api/state"));
       const data = await response.json();
       renderSnapshot(data);
     }

@@ -55,7 +55,7 @@ Available endpoints:
 - `POST /api/rotate`
 - `POST /api/mine`
 
-The page is styled for `qc.jrti.org` and uses JRTI branding drawn from the main institute site.
+The page is styled for `jrti.org/qc` and uses JRTI branding drawn from the main institute site.
 
 ## CLI Example
 
@@ -108,18 +108,17 @@ PYTHONPATH=src .venv/bin/python -m pq_agile_chain demo --workdir demo-output
 
 ## Deployment
 
-The repository now includes an Ubuntu/nginx deployment scaffold for `qc.jrti.org`:
+The repository now includes an Ubuntu/nginx deployment scaffold for `jrti.org/qc`:
 
-- `deploy/nginx/qc.jrti.org.conf`
+- `deploy/nginx/jrti.org-qc.conf`
 - `deploy/systemd/pq-agile-chain.service`
 - `deploy/README.md`
 
 The intended shape is:
 
-1. `qc.jrti.org` resolves to the target server.
+1. `jrti.org` already resolves to the target server.
 2. `systemd` runs `uvicorn` on `127.0.0.1:8401`.
-3. `nginx` proxies `qc.jrti.org` to that local service.
-4. `certbot` issues TLS once DNS is live.
+3. `nginx` proxies `jrti.org/qc` to that local service.
 
 ## Repository Layout
 
@@ -140,7 +139,7 @@ The intended shape is:
 - The proof-of-work loop is intentionally simple.
 - Wallet files store secret keys in plain JSON.
 - Only two PQ signature backends are wired in today.
-- `qc.jrti.org` still needs DNS and server access outside this repository.
+- `jrti.org/qc` still needs server-side nginx access outside this repository.
 
 ## License
 

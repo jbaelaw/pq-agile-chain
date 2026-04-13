@@ -63,7 +63,7 @@ class ChainWorkspace:
         mempool = list(chain.mempool) if chain else []
         return {
             "site": {
-                "host_hint": "qc.jrti.org",
+                "host_hint": "jrti.org/qc",
                 "brand": "JRTI",
                 "brand_ko": "법률·언어·인공지능 통섭연구소",
                 "app_name": "PQ-Agile Chain",
