@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from pq_agile_chain.chain import ChainValidationError, PQAgileChain
 from pq_agile_chain.crypto_backends import get_backend
-from pq_agile_chain.models import TransferTx
+from pq_agile_chain.models import TransferTx, WalletRecord
 from pq_agile_chain.utils import b64encode_bytes, utc_now
 from pq_agile_chain.wallets import create_wallet
 
@@ -19,8 +21,8 @@ def _bootstrap_chain(*, difficulty: int = 1):
 
 def _signed_transfer(
     *,
-    signing_wallet,
-    claimed_sender_wallet,
+    signing_wallet: WalletRecord,
+    claimed_sender_wallet: WalletRecord,
     recipient_account_id: str,
     amount: int,
     nonce: int,
@@ -70,12 +72,8 @@ def test_forged_signature_rejected():
         nonce=1,
     )
 
-    try:
+    with pytest.raises(ChainValidationError, match="signature"):
         chain.add_transaction(forged)
-    except ChainValidationError as exc:
-        assert "signature" in str(exc).lower()
-    else:
-        raise AssertionError("forged signature should have been rejected")
 
 
 def test_nonce_reuse_rejected():
@@ -92,12 +90,8 @@ def test_nonce_reuse_rejected():
         nonce=1,
     )
 
-    try:
+    with pytest.raises(ChainValidationError, match="nonce"):
         chain.add_transaction(replay)
-    except ChainValidationError as exc:
-        assert "nonce" in str(exc).lower()
-    else:
-        raise AssertionError("nonce reuse should have been rejected")
 
 
 def test_rotate_key_rejects_old_wallet_and_accepts_new_wallet():
@@ -112,12 +106,8 @@ def test_rotate_key_rejects_old_wallet_and_accepts_new_wallet():
     chain.queue_rotation(current_wallet=alice, new_wallet=alice_rotated)
     chain.mine_pending()
 
-    try:
+    with pytest.raises(ChainValidationError, match="active on-chain key"):
         chain.queue_transfer(sender_wallet=alice, recipient_account_id=bob.account_id, amount=1)
-    except ChainValidationError as exc:
-        assert "active on-chain key" in str(exc)
-    else:
-        raise AssertionError("old wallet should be invalid after rotation")
 
     chain.queue_transfer(
         sender_wallet=alice_rotated, recipient_account_id=bob.account_id, amount=11
@@ -149,9 +139,5 @@ def test_security_floor_blocks_downgrade():
         account_id=alice.account_id,
     )
 
-    try:
+    with pytest.raises(ChainValidationError, match="security_floor"):
         chain.queue_rotation(current_wallet=alice_rotated, new_wallet=downgrade_wallet)
-    except ChainValidationError as exc:
-        assert "security_floor" in str(exc)
-    else:
-        raise AssertionError("downgrade below security_floor should be rejected")

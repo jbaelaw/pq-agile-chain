@@ -3,4 +3,5 @@ __pycache__/
 .pytest_cache/
 *.pyc
 demo-output*/
+data/
 src/*.egg-info/

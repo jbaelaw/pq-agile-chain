@@ -1,20 +1,14 @@
-# Novelty In PQ-Agile Chain
+# Design Note: On-Chain Key Rotation
 
-## Core Claim
+## Scope
 
-The novelty in this project is not "a blockchain that uses a post-quantum signature." That part is delegated to established post-quantum primitives from `pqcrypto`.
+This project does not propose a new post-quantum signature algorithm. Signature generation and verification are delegated to `pqcrypto`.
 
-The novelty is that **post-quantum key migration is elevated into a consensus rule**.
+The design work here is in how the chain handles key changes.
 
-## What Makes It Different
+## Main Idea
 
-Many toy chains do one of these things:
-
-- hardcode a single signature scheme forever
-- identify an account directly with a public key
-- treat key replacement as a wallet-side operation
-
-`PQ-Agile Chain` instead gives each account a stable `account_id` and makes the following state explicit on-chain:
+The chain does not identify an account by `hash(public_key)`. It keeps a stable `account_id` and stores the current:
 
 - `algo_id`
 - `public_key`
@@ -22,41 +16,44 @@ Many toy chains do one of these things:
 - `nonce`
 - `balance`
 
-That creates room for controlled cryptographic evolution without changing account identity.
+That makes it possible to rotate keys without changing account identity.
 
 ## Rotation Rule
 
-`RotateKeyTx` is valid only if all of the following hold:
+`RotateKeyTx` is accepted only if all of the following are true:
 
-- the old on-chain key signs the rotation intent
-- the new key signs a separate ownership proof
-- the new algorithm's security level is at least the current `security_floor`
-- the new `security_floor` is not lower than the current one
-- the active key material actually changes
+- the current on-chain key signs the rotation request
+- the replacement key signs a possession proof
+- the replacement algorithm meets the current `security_floor`
+- the requested floor is not lower than the current floor
+- the active key actually changes
 
-The important result is that "rotate to a better PQ algorithm later" is not just documentation. It is executable consensus logic.
+Once the rotation is mined, the previous key is no longer valid for new transactions.
 
-## Security Floor
+## Why `security_floor` Exists
 
-`security_floor` is the account's lower bound for future cryptographic migrations.
+`security_floor` is a lower bound for future key rotations.
 
 Example:
 
 - Alice starts on `ml-dsa-65` with `security_floor = 3`
 - Alice rotates to `sphincs-shake-256s-simple` and raises `security_floor = 5`
-- From that point on, attempts to rotate Alice back to `ml-dsa-65` are rejected by the chain
+- a later attempt to rotate Alice back to `ml-dsa-65` is rejected
 
-This turns cryptographic agility into a one-way policy ratchet when the account owner wants it.
+This gives the account owner a monotonic upgrade policy if they want one.
 
-## Why Account ID Matters
+## Why `account_id` Exists
 
-If an address is just `hash(public_key)`, then key rotation changes identity semantics and can make migration awkward.
+If identity were tied directly to the public key, rotation would either:
 
-By separating `account_id` from `public_key`, this project allows:
+- change the account identity
+- require an address alias layer outside the core ledger rules
 
-- the same account identity to survive a key change
-- the chain to reject stale keys after rotation
-- balances and nonces to remain continuous across algorithm changes
+Keeping `account_id` separate allows:
+
+- balance continuity across key changes
+- nonce continuity across key changes
+- rejection of stale keys after a successful rotation
 
 ## Flow
 
@@ -71,25 +68,13 @@ flowchart LR
   consensus -->|rejectBelowFloor| rejectState[RejectDowngrade]
 ```
 
-## Why This Still Stays Simple
+## Boundaries
 
-The chain remains intentionally small:
+This is still a compact local demo:
 
-- file-based local state
-- replay validation
-- toy proof-of-work
-- only two signature backends
+- file-based state
+- replay-based validation
+- simple proof-of-work
+- no peer-to-peer network
 
-That simplicity is deliberate. It keeps the novelty inspectable and runnable instead of burying it under networking or smart-contract complexity.
-
-## Threat Model Notes
-
-This project demonstrates consensus behavior around PQ key management. It does not claim to solve:
-
-- secure secret key storage
-- network adversaries in a distributed setting
-- denial-of-service resistance
-- production-grade node synchronization
-- economic security of mining
-
-Its value is in showing that post-quantum cryptographic migration can be treated as **first-class ledger state**, not just as an upgrade note for operators.
+It is intended to show that key migration policy can live inside ledger validation rather than only in wallet tooling or documentation.

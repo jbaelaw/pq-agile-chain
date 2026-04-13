@@ -80,6 +80,10 @@ class PQAgileChain:
     @classmethod
     def load(cls, path: str | Path) -> PQAgileChain:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if payload.get("chain_version") != cls.CHAIN_VERSION:
+            raise ChainValidationError(
+                f"Unsupported chain version: {payload.get('chain_version')!r}"
+            )
         blocks = [Block.from_dict(item) for item in payload["blocks"]]
         mempool = list(payload.get("mempool", []))
         return cls(difficulty=int(payload["difficulty"]), blocks=blocks, mempool=mempool)
@@ -116,7 +120,10 @@ class PQAgileChain:
 
         state = self.projected_state()
         sender_state = self._require_account(state, sender_wallet.account_id)
-        if sender_state.algo_id != sender_wallet.algo_id or sender_state.public_key != sender_wallet.public_key:
+        if (
+            sender_state.algo_id != sender_wallet.algo_id
+            or sender_state.public_key != sender_wallet.public_key
+        ):
             raise ChainValidationError(
                 "Sender wallet does not match the currently active on-chain key"
             )

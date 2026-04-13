@@ -13,7 +13,7 @@ from .wallets import create_wallet, load_wallet, save_wallet
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pq-agile-chain",
-        description="A toy blockchain with post-quantum crypto agility.",
+        description="Local blockchain demo with post-quantum key rotation.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init", help="Create a genesis chain file")
     init_parser.add_argument("--chain", required=True, help="Chain JSON path")
     init_parser.add_argument(
-        "--difficulty", type=int, default=2, help="Toy proof-of-work difficulty"
+        "--difficulty", type=int, default=2, help="Proof-of-work difficulty"
     )
     init_parser.add_argument(
         "--allocation",
@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--new-security-floor",
         type=int,
         default=None,
-        help="New security floor. Defaults to the existing floor.",
+        help="New security floor. Defaults to the current floor.",
     )
     rotate_parser.add_argument(
         "--new-label",
@@ -83,12 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate", help="Replay and validate the chain")
     validate_parser.add_argument("--chain", required=True, help="Chain JSON path")
 
-    demo_parser = subparsers.add_parser("demo", help="Run the full novelty demo")
+    demo_parser = subparsers.add_parser("demo", help="Run the built-in scenario")
     demo_parser.add_argument(
         "--workdir", default="demo-output", help="Directory for demo artifacts"
     )
     demo_parser.add_argument(
-        "--difficulty", type=int, default=2, help="Toy proof-of-work difficulty"
+        "--difficulty", type=int, default=2, help="Proof-of-work difficulty"
     )
 
     return parser
@@ -152,10 +152,15 @@ def cmd_transfer(args: argparse.Namespace) -> int:
 def cmd_rotate_key(args: argparse.Namespace) -> int:
     chain = PQAgileChain.load(args.chain)
     current_wallet = load_wallet(args.wallet)
+    new_floor = (
+        args.new_security_floor
+        if args.new_security_floor is not None
+        else current_wallet.security_floor
+    )
     new_wallet = create_wallet(
         algo_id=args.new_algo,
         label=args.new_label or f"{current_wallet.label}-rotated",
-        security_floor=args.new_security_floor or current_wallet.security_floor,
+        security_floor=new_floor,
         account_id=current_wallet.account_id,
     )
 
@@ -291,24 +296,22 @@ def cmd_demo(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    commands = {
+        "create-wallet": cmd_create_wallet,
+        "init": cmd_init,
+        "transfer": cmd_transfer,
+        "rotate-key": cmd_rotate_key,
+        "mine": cmd_mine,
+        "validate": cmd_validate,
+        "demo": cmd_demo,
+    }
 
     try:
-        if args.command == "create-wallet":
-            return cmd_create_wallet(args)
-        if args.command == "init":
-            return cmd_init(args)
-        if args.command == "transfer":
-            return cmd_transfer(args)
-        if args.command == "rotate-key":
-            return cmd_rotate_key(args)
-        if args.command == "mine":
-            return cmd_mine(args)
-        if args.command == "validate":
-            return cmd_validate(args)
-        if args.command == "demo":
-            return cmd_demo(args)
-        parser.error(f"Unknown command: {args.command}")
-        return 2
+        handler = commands.get(args.command)
+        if handler is None:
+            parser.error(f"Unknown command: {args.command}")
+            return 2
+        return handler(args)
     except (ChainValidationError, ValueError, FileNotFoundError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

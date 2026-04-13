@@ -1,31 +1,28 @@
 # PQ-Agile Chain
 
-`PQ-Agile Chain` is a small but runnable blockchain that uses real post-quantum signature schemes and adds a chain-level novelty: **on-chain cryptographic agility with enforced security floors**.
+`PQ-Agile Chain` is a small local blockchain demo built around real post-quantum signatures. Its main design point is that key rotation is part of the ledger rules rather than a wallet-side convention.
 
-Instead of treating key migration as an off-chain operational detail, the chain stores each account's active algorithm, public key, nonce, and `security_floor`, then enforces key rotation through consensus rules.
+The chain tracks each account by a stable `account_id`. The active `algo_id`, `public_key`, `nonce`, `balance`, and `security_floor` live on-chain and are checked during replay.
 
-## Why This Is Post-Quantum
+## Cryptography
 
-This project does not invent its own signature primitive. It uses `pqcrypto`, which exposes tested bindings to PQClean implementations:
+This project uses `pqcrypto` rather than implementing its own signature scheme. The current backends are:
 
-- `ml-dsa-65` for the default wallet/signing path
-- `sphincs-shake-256s-simple` for upgrade and agility demonstrations
+- `ml-dsa-65`
+- `sphincs-shake-256s-simple`
 
-That means the "quantum-resistant" property comes from recognized post-quantum digital signature schemes, while the novelty comes from how the chain manages them.
+That keeps the post-quantum part tied to existing implementations while the chain logic focuses on how keys are managed over time.
 
-## Novelty
+## Key Rotation Rule
 
-The main novelty is **account-level PQ crypto agility as an on-chain rule**:
+`RotateKeyTx` is valid only when:
 
-- Every account has an `account_id` distinct from its public key.
-- The chain stores the currently active `algo_id`, `public_key`, `nonce`, `balance`, and `security_floor`.
-- `RotateKeyTx` requires two proofs:
-  - the old key authorizes the migration
-  - the new key proves possession
-- After a successful rotation, the old key is immediately invalid.
-- Accounts cannot rotate to an algorithm below their current `security_floor`.
+- the current on-chain key signs the rotation request
+- the replacement key proves possession
+- the replacement algorithm meets the account's `security_floor`
+- the floor is not lowered during the rotation
 
-This creates a simple but meaningful distinction from a toy blockchain that merely signs transactions with a PQ signature.
+Once a rotation is mined, the previous key is no longer accepted for new transactions.
 
 More detail: [`docs/novelty.md`](docs/novelty.md)
 
@@ -33,24 +30,34 @@ More detail: [`docs/novelty.md`](docs/novelty.md)
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e .[dev]
+.venv/bin/pip install -e '.[dev]'
 .venv/bin/pq-agile-chain demo --workdir demo-output
 ```
 
-The demo will:
+The demo creates two wallets, mines transfers, rotates one account from `ml-dsa-65` to `sphincs-shake-256s-simple`, then verifies that the old key and a downgrade attempt are both rejected.
 
-- create two ML-DSA wallets
-- initialize a chain with genesis balances
-- send a transfer
-- mine a block
-- rotate Alice from `ml-dsa-65` to `sphincs-shake-256s-simple`
-- mine the rotation
-- send a transfer with the new key
-- reject reuse of the old key
-- reject a downgrade below `security_floor`
-- validate the final chain
+## Web Explorer And API
 
-## Manual CLI Flow
+Run the web app locally:
+
+```bash
+.venv/bin/pq-agile-chain-web
+```
+
+The server listens on `127.0.0.1:8401` by default. Open `http://127.0.0.1:8401/` to use the explorer.
+
+Available endpoints:
+
+- `GET /api/health`
+- `GET /api/state`
+- `POST /api/demo/bootstrap`
+- `POST /api/transfer`
+- `POST /api/rotate`
+- `POST /api/mine`
+
+The page is styled for `qc.jrti.org` and uses JRTI branding drawn from the main institute site.
+
+## CLI Example
 
 Create wallets:
 
@@ -93,29 +100,47 @@ Run tests:
 .venv/bin/pytest -q
 ```
 
-Run the package without the console script:
+Run the module directly:
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pq_agile_chain demo --workdir demo-output
 ```
 
+## Deployment
+
+The repository now includes an Ubuntu/nginx deployment scaffold for `qc.jrti.org`:
+
+- `deploy/nginx/qc.jrti.org.conf`
+- `deploy/systemd/pq-agile-chain.service`
+- `deploy/README.md`
+
+The intended shape is:
+
+1. `qc.jrti.org` resolves to the target server.
+2. `systemd` runs `uvicorn` on `127.0.0.1:8401`.
+3. `nginx` proxies `qc.jrti.org` to that local service.
+4. `certbot` issues TLS once DNS is live.
+
 ## Repository Layout
 
 - `src/pq_agile_chain/crypto_backends.py`: PQ signature adapters and algorithm metadata
 - `src/pq_agile_chain/models.py`: wallets, blocks, and transaction dataclasses
-- `src/pq_agile_chain/chain.py`: replay-based validation, mempool handling, and novelty rules
-- `src/pq_agile_chain/mining.py`: toy proof-of-work
-- `src/pq_agile_chain/cli.py`: CLI entrypoints and demo
-- `tests/test_chain.py`: focused regression tests
-- `docs/novelty.md`: novelty explanation and threat model notes
+- `src/pq_agile_chain/chain.py`: state replay, mempool handling, and validation rules
+- `src/pq_agile_chain/mining.py`: simple proof-of-work
+- `src/pq_agile_chain/cli.py`: command-line entry points
+- `src/pq_agile_chain/service.py`: filesystem-backed workspace for the API
+- `src/pq_agile_chain/web.py`: FastAPI app and browser explorer
+- `tests/test_chain.py`: regression tests for replay, signatures, and key rotation
+- `tests/test_web.py`: API and explorer smoke test
+- `docs/novelty.md`: design note on the key rotation model
 
-## Limitations
+## Limits
 
-- This is a toy blockchain, not a production network.
-- Consensus is single-node file-based replay, not peer-to-peer networking.
-- Proof-of-work is intentionally simple and not economically meaningful.
-- Wallet files store secret keys unencrypted for simplicity.
-- The chain currently supports only two PQ signature algorithms so the agility model is clear and testable.
+- This is a single-node file-based demo, not a networked blockchain.
+- The proof-of-work loop is intentionally simple.
+- Wallet files store secret keys in plain JSON.
+- Only two PQ signature backends are wired in today.
+- `qc.jrti.org` still needs DNS and server access outside this repository.
 
 ## License
 

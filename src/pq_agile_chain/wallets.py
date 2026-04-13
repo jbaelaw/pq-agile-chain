@@ -16,7 +16,9 @@ def create_wallet(
     account_id: str | None = None,
 ) -> WalletRecord:
     backend = get_backend(algo_id)
-    requested_floor = security_floor or backend.security_level
+    requested_floor = (
+        backend.security_level if security_floor is None else security_floor
+    )
 
     if requested_floor < 1:
         raise ValueError("security_floor must be at least 1")

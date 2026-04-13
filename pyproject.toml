@@ -5,21 +5,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pq-agile-chain"
 version = "0.1.0"
-description = "A toy blockchain with post-quantum crypto agility."
+description = "Local blockchain demo with post-quantum key rotation."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [
+  { name = "Team JRTI" },
+]
+maintainers = [
+  { name = "Team JRTI" },
+]
 dependencies = [
   "pqcrypto>=0.4.0",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
 dev = [
+  "httpx>=0.28",
   "pytest>=8.3",
 ]
 
 [project.scripts]
 pq-agile-chain = "pq_agile_chain.cli:main"
+pq-agile-chain-web = "pq_agile_chain.web:run"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
