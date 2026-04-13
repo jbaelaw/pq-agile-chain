@@ -15,6 +15,18 @@ class WalletRecord:
     public_key: str
     secret_key: str
     created_at: str
+    secret_key_format: str = "plain"
+    secret_key_salt: str | None = None
+    secret_key_nonce: str | None = None
+    _cached_secret_key: bytes | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    @property
+    def is_encrypted(self) -> bool:
+        return self.secret_key_format != "plain"
 
     @property
     def public_key_bytes(self) -> bytes:
@@ -22,10 +34,22 @@ class WalletRecord:
 
     @property
     def secret_key_bytes(self) -> bytes:
+        if self.is_encrypted:
+            if self._cached_secret_key is None:
+                raise ValueError("Wallet secret key is encrypted; unlock it first")
+            return self._cached_secret_key
         return b64decode_text(self.secret_key)
 
+    def unlock(self, password: str) -> None:
+        from .wallets import decrypt_wallet_secret_key
+
+        self._cached_secret_key = decrypt_wallet_secret_key(self, password)
+
+    def lock(self) -> None:
+        self._cached_secret_key = None
+
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "account_id": self.account_id,
             "label": self.label,
             "algo_id": self.algo_id,
@@ -34,6 +58,11 @@ class WalletRecord:
             "secret_key": self.secret_key,
             "created_at": self.created_at,
         }
+        if self.is_encrypted:
+            payload["secret_key_format"] = self.secret_key_format
+            payload["secret_key_salt"] = self.secret_key_salt
+            payload["secret_key_nonce"] = self.secret_key_nonce
+        return payload
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> WalletRecord:
@@ -45,6 +74,9 @@ class WalletRecord:
             public_key=payload["public_key"],
             secret_key=payload["secret_key"],
             created_at=payload["created_at"],
+            secret_key_format=payload.get("secret_key_format", "plain"),
+            secret_key_salt=payload.get("secret_key_salt"),
+            secret_key_nonce=payload.get("secret_key_nonce"),
         )
 
 

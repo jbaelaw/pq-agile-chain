@@ -9,9 +9,15 @@ from typing import Any
 
 from .chain import PQAgileChain
 from .crypto_backends import DEFAULT_ALGO_ID, supported_algorithms
-from .wallets import create_wallet, load_wallet, save_wallet
+from .wallets import (
+    create_wallet,
+    load_wallet,
+    resolve_wallet_password,
+    save_wallet,
+)
 
 _WALLET_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_DEFAULT_WALLET_PASSWORD_ENV = "PQ_AGILE_CHAIN_WALLET_PASSWORD"
 
 
 class WorkspaceError(RuntimeError):
@@ -26,6 +32,9 @@ class ChainWorkspace:
         )
         self.chain_path = self.root_dir / "chain.json"
         self.wallets_dir = self.root_dir / "wallets"
+        self.wallet_password = resolve_wallet_password(
+            default_env=_DEFAULT_WALLET_PASSWORD_ENV
+        )
         self._lock = Lock()
 
     def snapshot(self) -> dict[str, Any]:
@@ -56,11 +65,13 @@ class ChainWorkspace:
                     "algo_id": wallet.algo_id,
                     "security_floor": wallet.security_floor,
                     "active_on_chain": is_active,
+                    "secret_storage": wallet.secret_key_format,
+                    "encrypted": wallet.is_encrypted,
                 }
             )
 
-        blocks = [block.to_dict() for block in chain.blocks] if chain else []
         mempool = list(chain.mempool) if chain else []
+        latest_block = self._block_summary(chain.blocks[-1]) if chain and chain.blocks else None
         return {
             "site": {
                 "host_hint": "jrti.org/qc",
@@ -75,11 +86,83 @@ class ChainWorkspace:
                 "chain_path": str(self.chain_path),
                 "has_chain": chain is not None,
             },
-            "chain": chain.to_dict() if chain else None,
-            "blocks": blocks,
+            "chain": self._chain_summary(chain),
+            "latest_block": latest_block,
             "mempool": mempool,
             "accounts": accounts,
             "wallets": wallets,
+        }
+
+    def list_blocks(self, *, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+        chain = self._load_chain_if_present()
+        if chain is None:
+            return {
+                "items": [],
+                "offset": offset,
+                "limit": limit,
+                "total": 0,
+                "order": "desc",
+            }
+
+        ordered_blocks = list(reversed(chain.blocks))
+        items = [
+            self._block_summary(block)
+            for block in ordered_blocks[offset : offset + limit]
+        ]
+        return {
+            "items": items,
+            "offset": offset,
+            "limit": limit,
+            "total": len(ordered_blocks),
+            "order": "desc",
+        }
+
+    def list_transactions(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        include_mempool: bool = True,
+    ) -> dict[str, Any]:
+        chain = self._load_chain_if_present()
+        if chain is None:
+            return {
+                "items": [],
+                "offset": offset,
+                "limit": limit,
+                "total": 0,
+                "order": "desc",
+            }
+
+        items: list[dict[str, Any]] = []
+        if include_mempool:
+            for tx in reversed(chain.mempool):
+                items.append(
+                    self._transaction_summary(
+                        tx,
+                        block_index=None,
+                        position=None,
+                        status="pending",
+                    )
+                )
+
+        for block in reversed(chain.blocks):
+            for position, tx in reversed(list(enumerate(block.transactions))):
+                items.append(
+                    self._transaction_summary(
+                        tx,
+                        block_index=block.index,
+                        position=position,
+                        status="confirmed",
+                    )
+                )
+
+        return {
+            "items": items[offset : offset + limit],
+            "offset": offset,
+            "limit": limit,
+            "total": len(items),
+            "order": "desc",
         }
 
     def reset_demo(self, *, difficulty: int = 2) -> dict[str, Any]:
@@ -96,11 +179,13 @@ class ChainWorkspace:
                 algo_id=DEFAULT_ALGO_ID,
                 label="alice",
                 security_floor=3,
+                password=self.wallet_password,
             )
             bob = create_wallet(
                 algo_id=DEFAULT_ALGO_ID,
                 label="bob",
                 security_floor=3,
+                password=self.wallet_password,
             )
             save_wallet(alice, self._wallet_path("alice"))
             save_wallet(bob, self._wallet_path("bob"))
@@ -122,7 +207,7 @@ class ChainWorkspace:
     ) -> dict[str, Any]:
         with self._lock:
             chain = self._load_chain()
-            sender_wallet = self._load_wallet(sender_wallet_id)
+            sender_wallet = self._load_wallet(sender_wallet_id, require_secret=True)
             if recipient_wallet_id:
                 recipient_account_id = self._load_wallet(recipient_wallet_id).account_id
             if recipient_account_id is None:
@@ -147,10 +232,13 @@ class ChainWorkspace:
     ) -> dict[str, Any]:
         with self._lock:
             chain = self._load_chain()
-            current_wallet = self._load_wallet(current_wallet_id)
+            current_wallet = self._load_wallet(current_wallet_id, require_secret=True)
             wallet_id = new_wallet_id or self._next_wallet_id(
                 f"{current_wallet_id}-{new_algo_id.replace('-', '_')}"
             )
+            wallet_path = self._wallet_path(wallet_id)
+            if wallet_path.exists():
+                raise WorkspaceError(f"wallet_id {wallet_id!r} already exists")
             floor = (
                 current_wallet.security_floor
                 if new_security_floor is None
@@ -161,9 +249,10 @@ class ChainWorkspace:
                 label=new_label or f"{current_wallet.label}-{new_algo_id}",
                 security_floor=floor,
                 account_id=current_wallet.account_id,
+                password=self.wallet_password,
             )
             tx = chain.queue_rotation(current_wallet=current_wallet, new_wallet=new_wallet)
-            save_wallet(new_wallet, self._wallet_path(wallet_id))
+            save_wallet(new_wallet, wallet_path)
             chain.save(self.chain_path)
             return {
                 "wallet_id": wallet_id,
@@ -188,8 +277,18 @@ class ChainWorkspace:
             return None
         return PQAgileChain.load(self.chain_path)
 
-    def _load_wallet(self, wallet_id: str):
-        return load_wallet(self._wallet_path(wallet_id))
+    def _load_wallet(self, wallet_id: str, *, require_secret: bool = False):
+        wallet = load_wallet(self._wallet_path(wallet_id), password=self.wallet_password)
+        if not require_secret:
+            return wallet
+
+        try:
+            _ = wallet.secret_key_bytes
+        except ValueError as exc:
+            raise WorkspaceError(
+                "Wallet secret key is encrypted; set PQ_AGILE_CHAIN_WALLET_PASSWORD to enable signing"
+            ) from exc
+        return wallet
 
     def _wallet_path(self, wallet_id: str) -> Path:
         if not _WALLET_ID_RE.fullmatch(wallet_id):
@@ -215,3 +314,60 @@ class ChainWorkspace:
         if not sanitized:
             return "wallet"
         return sanitized[:64]
+
+    @staticmethod
+    def _chain_summary(chain: PQAgileChain | None) -> dict[str, Any] | None:
+        if chain is None:
+            return None
+
+        latest_block = chain.blocks[-1] if chain.blocks else None
+        return {
+            "chain_version": chain.CHAIN_VERSION,
+            "difficulty": chain.difficulty,
+            "block_count": len(chain.blocks),
+            "mempool_count": len(chain.mempool),
+            "latest_block_index": latest_block.index if latest_block else None,
+            "latest_block_hash": latest_block.block_hash if latest_block else None,
+        }
+
+    @staticmethod
+    def _block_summary(block) -> dict[str, Any]:
+        return {
+            "index": block.index,
+            "created_at": block.timestamp,
+            "difficulty": block.difficulty,
+            "nonce": block.nonce,
+            "previous_hash": block.previous_hash,
+            "block_hash": block.block_hash,
+            "tx_count": len(block.transactions),
+        }
+
+    @staticmethod
+    def _transaction_summary(
+        tx: dict[str, Any],
+        *,
+        block_index: int | None,
+        position: int | None,
+        status: str,
+    ) -> dict[str, Any]:
+        summary = {
+            "kind": tx["kind"],
+            "created_at": tx.get("created_at"),
+            "status": status,
+            "block_index": block_index,
+            "position": position,
+            "nonce": tx.get("nonce"),
+            "algo_id": tx.get("algo_id"),
+        }
+        for key in (
+            "sender_account_id",
+            "recipient_account_id",
+            "account_id",
+            "old_algo_id",
+            "new_algo_id",
+            "amount",
+            "label",
+        ):
+            if key in tx:
+                summary[key] = tx[key]
+        return summary

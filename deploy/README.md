@@ -19,6 +19,16 @@ python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
+Useful environment variables:
+
+```bash
+export PQ_AGILE_CHAIN_DATA_DIR=/var/lib/pq-agile-chain
+export PQ_AGILE_CHAIN_WALLET_PASSWORD='set-this-if-you-want-encrypted-wallets'
+export PQ_AGILE_CHAIN_ADMIN_TOKEN='set-this-if-you-want-app-level-write-protection'
+```
+
+If `PQ_AGILE_CHAIN_ADMIN_TOKEN` is set, the browser explorer can still perform writes by filling the token field in the page and sending it as `X-Admin-Token`.
+
 ## 2. systemd
 
 ```bash

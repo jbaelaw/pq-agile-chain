@@ -7,7 +7,9 @@ from pathlib import Path
 
 from .chain import ChainValidationError, PQAgileChain
 from .crypto_backends import DEFAULT_ALGO_ID, supported_algorithms
-from .wallets import create_wallet, load_wallet, save_wallet
+from .wallets import create_wallet, load_wallet, resolve_wallet_password, save_wallet
+
+DEFAULT_WALLET_PASSWORD_ENV = "PQ_AGILE_CHAIN_WALLET_PASSWORD"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Minimum future algorithm security level this account will accept",
     )
+    create_wallet_parser.add_argument(
+        "--password",
+        default=None,
+        help="Encrypt the wallet secret key with this password",
+    )
+    create_wallet_parser.add_argument(
+        "--password-env",
+        default=None,
+        help="Read the wallet encryption password from this environment variable",
+    )
 
     init_parser = subparsers.add_parser("init", help="Create a genesis chain file")
     init_parser.add_argument("--chain", required=True, help="Chain JSON path")
@@ -49,6 +61,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     transfer_parser.add_argument("--chain", required=True, help="Chain JSON path")
     transfer_parser.add_argument("--wallet", required=True, help="Sender wallet path")
+    transfer_parser.add_argument(
+        "--wallet-password",
+        default=None,
+        help="Password used to unlock the sender wallet",
+    )
+    transfer_parser.add_argument(
+        "--wallet-password-env",
+        default=None,
+        help="Read the sender wallet password from this environment variable",
+    )
     transfer_recipient = transfer_parser.add_mutually_exclusive_group(required=True)
     transfer_recipient.add_argument("--to-wallet", help="Recipient wallet path")
     transfer_recipient.add_argument("--to-account", help="Recipient account_id")
@@ -59,6 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rotate_parser.add_argument("--chain", required=True, help="Chain JSON path")
     rotate_parser.add_argument("--wallet", required=True, help="Current wallet path")
+    rotate_parser.add_argument(
+        "--wallet-password",
+        default=None,
+        help="Password used to unlock the current wallet",
+    )
+    rotate_parser.add_argument(
+        "--wallet-password-env",
+        default=None,
+        help="Read the current wallet password from this environment variable",
+    )
     rotate_parser.add_argument(
         "--new-wallet-out", required=True, help="Where to write the rotated wallet"
     )
@@ -76,6 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional new wallet label. Defaults to '<old>-rotated'.",
     )
+    rotate_parser.add_argument(
+        "--new-wallet-password",
+        default=None,
+        help="Password used to encrypt the replacement wallet",
+    )
+    rotate_parser.add_argument(
+        "--new-wallet-password-env",
+        default=None,
+        help="Read the replacement wallet password from this environment variable",
+    )
 
     mine_parser = subparsers.add_parser("mine", help="Mine the current mempool")
     mine_parser.add_argument("--chain", required=True, help="Chain JSON path")
@@ -89,6 +131,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     demo_parser.add_argument(
         "--difficulty", type=int, default=2, help="Proof-of-work difficulty"
+    )
+    demo_parser.add_argument(
+        "--wallet-password",
+        default=None,
+        help="Password used to encrypt demo wallets",
+    )
+    demo_parser.add_argument(
+        "--wallet-password-env",
+        default=None,
+        help="Read the demo wallet password from this environment variable",
     )
 
     return parser
@@ -104,15 +156,36 @@ def _parse_allocation(spec: str) -> tuple[str, int]:
     return wallet_path, amount
 
 
+def _load_wallet_for_signing(
+    wallet_path: str,
+    *,
+    password: str | None = None,
+    password_env: str | None = None,
+) -> object:
+    resolved_password = resolve_wallet_password(
+        password=password,
+        password_env=password_env,
+        default_env=DEFAULT_WALLET_PASSWORD_ENV,
+    )
+    return load_wallet(wallet_path, password=resolved_password)
+
+
 def cmd_create_wallet(args: argparse.Namespace) -> int:
+    wallet_password = resolve_wallet_password(
+        password=args.password,
+        password_env=args.password_env,
+    )
     wallet = create_wallet(
         algo_id=args.algo,
         label=args.label,
         security_floor=args.security_floor,
+        password=wallet_password,
     )
     save_wallet(wallet, args.output)
+    storage_mode = "encrypted" if wallet.is_encrypted else "plain"
     print(
-        f"Created wallet {wallet.label} ({wallet.account_id}) with {wallet.algo_id} -> {args.output}"
+        f"Created wallet {wallet.label} ({wallet.account_id}) with {wallet.algo_id} "
+        f"[{storage_mode}] -> {args.output}"
     )
     return 0
 
@@ -133,7 +206,11 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def cmd_transfer(args: argparse.Namespace) -> int:
     chain = PQAgileChain.load(args.chain)
-    sender_wallet = load_wallet(args.wallet)
+    sender_wallet = _load_wallet_for_signing(
+        args.wallet,
+        password=args.wallet_password,
+        password_env=args.wallet_password_env,
+    )
     recipient_account_id = (
         load_wallet(args.to_wallet).account_id if args.to_wallet else args.to_account
     )
@@ -151,17 +228,32 @@ def cmd_transfer(args: argparse.Namespace) -> int:
 
 def cmd_rotate_key(args: argparse.Namespace) -> int:
     chain = PQAgileChain.load(args.chain)
-    current_wallet = load_wallet(args.wallet)
+    current_wallet = _load_wallet_for_signing(
+        args.wallet,
+        password=args.wallet_password,
+        password_env=args.wallet_password_env,
+    )
     new_floor = (
         args.new_security_floor
         if args.new_security_floor is not None
         else current_wallet.security_floor
     )
+    new_wallet_password = resolve_wallet_password(
+        password=args.new_wallet_password,
+        password_env=args.new_wallet_password_env,
+    )
+    if new_wallet_password is None:
+        new_wallet_password = resolve_wallet_password(
+            password=args.wallet_password,
+            password_env=args.wallet_password_env,
+            default_env=DEFAULT_WALLET_PASSWORD_ENV,
+        )
     new_wallet = create_wallet(
         algo_id=args.new_algo,
         label=args.new_label or f"{current_wallet.label}-rotated",
         security_floor=new_floor,
         account_id=current_wallet.account_id,
+        password=new_wallet_password,
     )
 
     tx = chain.queue_rotation(current_wallet=current_wallet, new_wallet=new_wallet)
@@ -203,9 +295,24 @@ def cmd_demo(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir)
     wallets_dir = workdir / "wallets"
     wallets_dir.mkdir(parents=True, exist_ok=True)
+    wallet_password = resolve_wallet_password(
+        password=args.wallet_password,
+        password_env=args.wallet_password_env,
+        default_env=DEFAULT_WALLET_PASSWORD_ENV,
+    )
 
-    alice = create_wallet(algo_id="ml-dsa-65", label="alice", security_floor=3)
-    bob = create_wallet(algo_id="ml-dsa-65", label="bob", security_floor=3)
+    alice = create_wallet(
+        algo_id="ml-dsa-65",
+        label="alice",
+        security_floor=3,
+        password=wallet_password,
+    )
+    bob = create_wallet(
+        algo_id="ml-dsa-65",
+        label="bob",
+        security_floor=3,
+        password=wallet_password,
+    )
     alice_wallet_path = save_wallet(alice, wallets_dir / "alice.wallet.json")
     bob_wallet_path = save_wallet(bob, wallets_dir / "bob.wallet.json")
 
@@ -225,6 +332,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
         label="alice-rotated",
         security_floor=5,
         account_id=alice.account_id,
+        password=wallet_password,
     )
     alice_rotated_path = save_wallet(alice_rotated, wallets_dir / "alice-rotated.wallet.json")
     rotate_tx = chain.queue_rotation(current_wallet=alice, new_wallet=alice_rotated)
@@ -248,6 +356,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
         label="alice-downgrade-attempt",
         security_floor=3,
         account_id=alice.account_id,
+        password=wallet_password,
     )
     downgrade_error = ""
     try:

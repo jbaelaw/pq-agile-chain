@@ -47,6 +47,24 @@ ALGORITHMS: dict[str, SignatureBackend] = {
         security_level=3,
         display_name="ML-DSA-65",
     ),
+    "ml-dsa-87": SignatureBackend(
+        algo_id="ml-dsa-87",
+        module_path="pqcrypto.sign.ml_dsa_87",
+        security_level=5,
+        display_name="ML-DSA-87",
+    ),
+    "falcon-512": SignatureBackend(
+        algo_id="falcon-512",
+        module_path="pqcrypto.sign.falcon_512",
+        security_level=3,
+        display_name="FALCON-512",
+    ),
+    "falcon-1024": SignatureBackend(
+        algo_id="falcon-1024",
+        module_path="pqcrypto.sign.falcon_1024",
+        security_level=5,
+        display_name="FALCON-1024",
+    ),
     "sphincs-shake-256s-simple": SignatureBackend(
         algo_id="sphincs-shake-256s-simple",
         module_path="pqcrypto.sign.sphincs_shake_256s_simple",

@@ -5,3 +5,5 @@ __pycache__/
 demo-output*/
 data/
 src/*.egg-info/
+dist/
+build/

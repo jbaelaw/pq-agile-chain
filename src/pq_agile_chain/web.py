@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
+import secrets
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .chain import ChainValidationError
+from .crypto_backends import BackendError
 from .service import ChainWorkspace, WorkspaceError
 
 INDEX_HTML = """<!doctype html>
@@ -78,6 +81,30 @@ INDEX_HTML = """<!doctype html>
       flex-wrap: wrap;
       gap: 10px;
       margin: 18px 0 0;
+    }
+    .header-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 12px;
+      align-items: end;
+    }
+    @media (min-width: 760px) {
+      .header-tools {
+        grid-template-columns: auto minmax(260px, 360px);
+      }
+    }
+    .toolbar-block {
+      min-width: 0;
+    }
+    .toolbar-block .toolbar {
+      margin-top: 0;
+    }
+    .token-label {
+      margin-bottom: 0;
+    }
+    .token-help {
+      margin-top: 6px;
+      font-size: 0.9rem;
     }
     button {
       border: 1px solid var(--accent);
@@ -155,10 +182,20 @@ INDEX_HTML = """<!doctype html>
       <p class="muted">JRTI · 법률·언어·인공지능 통섭연구소</p>
       <h1>jrti.org/qc</h1>
       <p>PQ-Agile Chain demonstrator. Post-quantum signatures are provided by <code>pqcrypto</code>; the chain logic focuses on account-level key rotation and security floors.</p>
-      <div class="toolbar">
-        <button id="reset-demo">데모 초기화</button>
-        <button id="mine-button">보류 트랜잭션 채굴</button>
-        <button id="refresh-button" class="secondary">상태 새로고침</button>
+      <div class="header-tools">
+        <div class="toolbar-block">
+          <div class="toolbar">
+            <button id="reset-demo">데모 초기화</button>
+            <button id="mine-button">보류 트랜잭션 채굴</button>
+            <button id="refresh-button" class="secondary">상태 새로고침</button>
+          </div>
+        </div>
+        <div class="toolbar-block">
+          <label class="token-label">관리 토큰
+            <input id="admin-token" type="password" autocomplete="off" placeholder="Optional X-Admin-Token">
+          </label>
+          <p class="muted token-help">쓰기 API가 보호된 배포에서는 이 값을 브라우저 세션에 저장해 함께 전송합니다.</p>
+        </div>
       </div>
       <div id="status" class="status"></div>
     </header>
@@ -217,6 +254,11 @@ INDEX_HTML = """<!doctype html>
     <section class="grid">
       <article class="panel">
         <h2>최근 블록</h2>
+        <div class="toolbar">
+          <button id="blocks-prev" class="secondary">이전 페이지</button>
+          <button id="blocks-next" class="secondary">다음 페이지</button>
+          <span id="blocks-page-status" class="muted"></span>
+        </div>
         <div id="blocks-table"></div>
       </article>
       <article class="panel">
@@ -227,9 +269,31 @@ INDEX_HTML = """<!doctype html>
   </main>
 
   <script>
-    const state = { snapshot: null };
+    const state = { snapshot: null, blockOffset: 0, blockLimit: 10, blockTotal: 0 };
     const statusEl = document.getElementById("status");
     const basePath = window.location.pathname.startsWith("/qc") ? "/qc" : "";
+    const blockPrevButton = document.getElementById("blocks-prev");
+    const blockNextButton = document.getElementById("blocks-next");
+    const adminTokenInput = document.getElementById("admin-token");
+    const tokenStorageKey = "pqAgileChainAdminToken";
+
+    try {
+      adminTokenInput.value = window.sessionStorage.getItem(tokenStorageKey) || "";
+    } catch (_error) {
+      adminTokenInput.value = "";
+    }
+
+    adminTokenInput.addEventListener("input", () => {
+      try {
+        if (adminTokenInput.value) {
+          window.sessionStorage.setItem(tokenStorageKey, adminTokenInput.value);
+        } else {
+          window.sessionStorage.removeItem(tokenStorageKey);
+        }
+      } catch (_error) {
+        // Ignore storage failures and continue with the in-memory field value.
+      }
+    });
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
@@ -268,17 +332,16 @@ INDEX_HTML = """<!doctype html>
       state.snapshot = snapshot;
 
       const chain = snapshot.chain;
-      const blocks = snapshot.blocks || [];
       const wallets = snapshot.wallets || [];
       const accounts = snapshot.accounts || [];
       const mempool = snapshot.mempool || [];
-      const lastBlock = blocks.length ? blocks[blocks.length - 1] : null;
+      const latestBlock = snapshot.latest_block;
 
       document.getElementById("chain-summary").innerHTML = chain
-        ? `<p>블록 수: <strong>${blocks.length}</strong></p>
+        ? `<p>블록 수: <strong>${chain.block_count}</strong></p>
            <p>난이도: <strong>${chain.difficulty}</strong></p>
-           <p>보류 트랜잭션: <strong>${mempool.length}</strong></p>
-           <p>마지막 블록 해시: <code>${lastBlock.block_hash.slice(0, 24)}...</code></p>`
+           <p>보류 트랜잭션: <strong>${chain.mempool_count}</strong></p>
+           <p>마지막 블록 해시: <code>${latestBlock ? `${latestBlock.block_hash.slice(0, 24)}...` : "없음"}</code></p>`
         : '<p class="muted">아직 체인이 없습니다. "데모 초기화"를 먼저 실행하세요.</p>';
 
       document.getElementById("workspace-summary").innerHTML =
@@ -304,26 +367,12 @@ INDEX_HTML = """<!doctype html>
           { key: "label", label: "label" },
           { key: "algo_id", label: "algo" },
           { key: "security_floor", label: "floor" },
+          { key: "secret_storage", label: "secret storage" },
           { key: "active_on_chain", label: "active" }
         ],
         wallets.map((wallet) => ({
           ...wallet,
           active_on_chain: wallet.active_on_chain ? "yes" : "no"
-        }))
-      );
-
-      document.getElementById("blocks-table").innerHTML = renderTable(
-        [
-          { key: "index", label: "height" },
-          { key: "timestamp", label: "timestamp" },
-          { key: "tx_count", label: "tx" },
-          { key: "short_hash", label: "hash", raw: true }
-        ],
-        [...blocks].reverse().map((block) => ({
-          index: block.index,
-          timestamp: block.timestamp,
-          tx_count: block.transactions.length,
-          short_hash: `<code>${block.block_hash.slice(0, 20)}...</code>`
         }))
       );
 
@@ -357,14 +406,58 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function renderBlocksPage(page) {
+      state.blockOffset = page.offset;
+      state.blockTotal = page.total;
+      const pageStart = page.total ? page.offset + 1 : 0;
+      const pageEnd = Math.min(page.offset + page.items.length, page.total);
+
+      document.getElementById("blocks-table").innerHTML = renderTable(
+        [
+          { key: "index", label: "height" },
+          { key: "created_at", label: "timestamp" },
+          { key: "tx_count", label: "tx" },
+          { key: "short_hash", label: "hash", raw: true }
+        ],
+        page.items.map((block) => ({
+          ...block,
+          short_hash: `<code>${block.block_hash.slice(0, 20)}...</code>`
+        }))
+      );
+
+      document.getElementById("blocks-page-status").textContent =
+        page.total
+          ? `${pageStart}-${pageEnd} / ${page.total}`
+          : "0 / 0";
+      blockPrevButton.disabled = page.offset === 0;
+      blockNextButton.disabled = page.offset + page.limit >= page.total;
+    }
+
     function apiUrl(path) {
       return `${basePath}${path}`;
+    }
+
+    function writeHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      if (adminTokenInput.value) {
+        headers["X-Admin-Token"] = adminTokenInput.value;
+      }
+      return headers;
+    }
+
+    async function getJson(path) {
+      const response = await fetch(apiUrl(path));
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || "request failed");
+      }
+      return data;
     }
 
     async function callApi(path, payload) {
       const response = await fetch(apiUrl(path), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: writeHeaders(),
         body: JSON.stringify(payload || {})
       });
       const data = await response.json();
@@ -374,10 +467,19 @@ INDEX_HTML = """<!doctype html>
       return data;
     }
 
-    async function refreshState() {
-      const response = await fetch(apiUrl("/api/state"));
-      const data = await response.json();
-      renderSnapshot(data);
+    async function loadBlocks(offset = state.blockOffset) {
+      const page = await getJson(`/api/blocks?offset=${offset}&limit=${state.blockLimit}`);
+      renderBlocksPage(page);
+    }
+
+    async function refreshState(resetBlockOffset = false) {
+      const nextOffset = resetBlockOffset ? 0 : state.blockOffset;
+      const [snapshot, blockPage] = await Promise.all([
+        getJson("/api/state"),
+        getJson(`/api/blocks?offset=${nextOffset}&limit=${state.blockLimit}`)
+      ]);
+      renderSnapshot(snapshot);
+      renderBlocksPage(blockPage);
     }
 
     document.getElementById("refresh-button").addEventListener("click", async () => {
@@ -395,6 +497,7 @@ INDEX_HTML = """<!doctype html>
       try {
         const data = await callApi("/api/demo/bootstrap", { difficulty: 2 });
         renderSnapshot(data.snapshot);
+        await loadBlocks(0);
         setStatus("데모 체인을 초기화했습니다.");
       } catch (error) {
         setStatus(error.message, true);
@@ -410,6 +513,7 @@ INDEX_HTML = """<!doctype html>
           amount: Number(document.getElementById("transfer-amount").value)
         });
         renderSnapshot(data.snapshot);
+        await loadBlocks(0);
         setStatus("송금 트랜잭션을 mempool에 추가했습니다.");
       } catch (error) {
         setStatus(error.message, true);
@@ -429,6 +533,7 @@ INDEX_HTML = """<!doctype html>
           new_security_floor: Number(document.getElementById("rotate-floor").value)
         });
         renderSnapshot(data.snapshot);
+        await loadBlocks(0);
         setStatus(`회전 트랜잭션을 추가했습니다. 새 지갑: ${data.wallet_id}`);
       } catch (error) {
         setStatus(error.message, true);
@@ -440,7 +545,24 @@ INDEX_HTML = """<!doctype html>
       try {
         const data = await callApi("/api/mine");
         renderSnapshot(data.snapshot);
+        await loadBlocks(0);
         setStatus(`블록 #${data.block.index}을 채굴했습니다.`);
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    blockPrevButton.addEventListener("click", async () => {
+      try {
+        await loadBlocks(Math.max(0, state.blockOffset - state.blockLimit));
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+
+    blockNextButton.addEventListener("click", async () => {
+      try {
+        await loadBlocks(state.blockOffset + state.blockLimit);
       } catch (error) {
         setStatus(error.message, true);
       }
@@ -477,11 +599,34 @@ class RotateRequest(BaseModel):
 
 def create_app(root_dir: str | Path | None = None) -> FastAPI:
     workspace = ChainWorkspace(root_dir)
+    admin_token = os.environ.get("PQ_AGILE_CHAIN_ADMIN_TOKEN")
+    if admin_token == "":
+        raise ValueError("PQ_AGILE_CHAIN_ADMIN_TOKEN must not be empty")
     app = FastAPI(
         title="PQ-Agile Chain",
-        version="0.1.0",
-        summary="JRTI QC web explorer for a post-quantum chain demo.",
+        version="0.3.0",
+        summary="Account-based post-quantum chain explorer with encrypted wallets, paginated history, replay validation, and on-chain key rotation.",
     )
+
+    def require_write_access(
+        x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        if not admin_token:
+            return
+
+        bearer_token = None
+        if authorization:
+            scheme, _, value = authorization.partition(" ")
+            if scheme.lower() == "bearer" and value:
+                bearer_token = value
+
+        provided_token = x_admin_token or bearer_token
+        if not provided_token or not secrets.compare_digest(provided_token, admin_token):
+            raise HTTPException(
+                status_code=403,
+                detail="Write operations require a valid admin token",
+            )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
@@ -495,12 +640,37 @@ def create_app(root_dir: str | Path | None = None) -> FastAPI:
     def state() -> dict:
         return workspace.snapshot()
 
+    @app.get("/api/blocks")
+    def blocks(
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=10, ge=1, le=100),
+    ) -> dict:
+        return workspace.list_blocks(offset=offset, limit=limit)
+
+    @app.get("/api/transactions")
+    def transactions(
+        offset: int = Query(default=0, ge=0),
+        limit: int = Query(default=50, ge=1, le=200),
+        include_mempool: bool = Query(default=True),
+    ) -> dict:
+        return workspace.list_transactions(
+            offset=offset,
+            limit=limit,
+            include_mempool=include_mempool,
+        )
+
     @app.post("/api/demo/bootstrap")
-    def bootstrap_demo(payload: DemoBootstrapRequest) -> dict:
+    def bootstrap_demo(
+        payload: DemoBootstrapRequest,
+        _: None = Depends(require_write_access),
+    ) -> dict:
         return {"snapshot": workspace.reset_demo(difficulty=payload.difficulty)}
 
     @app.post("/api/transfer")
-    def transfer(payload: TransferRequest) -> dict:
+    def transfer(
+        payload: TransferRequest,
+        _: None = Depends(require_write_access),
+    ) -> dict:
         return workspace.transfer(
             sender_wallet_id=payload.sender_wallet_id,
             recipient_wallet_id=payload.recipient_wallet_id,
@@ -509,7 +679,10 @@ def create_app(root_dir: str | Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/rotate")
-    def rotate(payload: RotateRequest) -> dict:
+    def rotate(
+        payload: RotateRequest,
+        _: None = Depends(require_write_access),
+    ) -> dict:
         return workspace.rotate(
             current_wallet_id=payload.current_wallet_id,
             new_algo_id=payload.new_algo_id,
@@ -519,11 +692,12 @@ def create_app(root_dir: str | Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/mine")
-    def mine() -> dict:
+    def mine(_: None = Depends(require_write_access)) -> dict:
         return workspace.mine()
 
     @app.exception_handler(WorkspaceError)
     @app.exception_handler(ChainValidationError)
+    @app.exception_handler(BackendError)
     async def handle_workspace_error(_, exc: Exception):
         from fastapi.responses import JSONResponse
 
